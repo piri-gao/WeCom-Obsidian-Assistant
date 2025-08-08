@@ -1,0 +1,51 @@
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.4.10:5000
+[33mPress CTRL+C to quit[0m
+106.55.227.187 - - [08/Aug/2025 16:07:24] "POST /hook_path?msg_signature=b3023d4bec14c7381275b9ea8e0a7976ff48d39b&timestamp=1754640444&nonce=1754435817 HTTP/1.1" 200 -
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.4.10:5000
+[33mPress CTRL+C to quit[0m
+112.53.2.93 - - [08/Aug/2025 16:12:53] "POST /hook_path?msg_signature=a4b5b6e512bedcfff7265aac94a9ff4eee29e0fc&timestamp=1754640773&nonce=1754741270 HTTP/1.1" 200 -
+112.53.2.93 - - [08/Aug/2025 16:35:30] "POST /hook_path?msg_signature=32ac25e47e8009874cf25f7acfb35135ad893f20&timestamp=1754642130&nonce=1754699761 HTTP/1.1" 200 -
+106.55.227.187 - - [08/Aug/2025 16:36:02] "POST /hook_path?msg_signature=221da1ed49e9f7950d36de6b13fbbea0dcfb6514&timestamp=1754642162&nonce=1755192621 HTTP/1.1" 200 -
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.4.10:5000
+[33mPress CTRL+C to quit[0m
+112.53.2.93 - - [08/Aug/2025 17:40:38] "POST /hook_path?msg_signature=c583957936ddd4d8265d17a584597c7f19282ff8&timestamp=1754646038&nonce=1754656294 HTTP/1.1" 200 -
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.4.10:5000
+[33mPress CTRL+C to quit[0m
+112.53.2.93 - - [08/Aug/2025 17:45:19] "POST /hook_path?msg_signature=ace1ae869c4ad048a9fb4ab0f93bf1f620ea8aa5&timestamp=1754646319&nonce=1754430011 HTTP/1.1" 200 -
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.4.10:5000
+[33mPress CTRL+C to quit[0m
+112.53.2.93 - - [08/Aug/2025 18:05:32] "POST /hook_path?msg_signature=1ba14ca232d0e29dc646a6276c26afd78803f061&timestamp=1754647532&nonce=1755092370 HTTP/1.1" 200 -
+106.55.227.187 - - [08/Aug/2025 18:06:16] "POST /hook_path?msg_signature=beb52c651ae2edc85cd6d55ca3b73da99f43074a&timestamp=1754647576&nonce=1754678797 HTTP/1.1" 200 -
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://10.0.4.10:5000
+[33mPress CTRL+C to quit[0m
+175.27.32.31 - - [08/Aug/2025 18:08:42] "POST /hook_path?msg_signature=aec2de3045cb9486bf4429e70b09e48b4737a0b3&timestamp=1754647722&nonce=1755169058 HTTP/1.1" 200 -

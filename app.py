@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-企业微信「微信客服 ↔ 自建应用」统一回调程序（含自愈补拉）
+企业微信「微信客服 ↔ 自建应用」统一回调程序（含自愈补拉 + 保存成功回执）
 - 回调 URL： http(s)://你的域名/hook_path
-- 客服绑定：在客服里选择「通过自建应用管理此账号」绑定到本应用
-- 支持消息：
-    * text：普通文本
-    * link：链接卡片（公众号、知乎等分享）
-- 自愈：periodic_sync_loop() 每隔 SYNC_INTERVAL 秒按游标补拉，防止挂掉期间丢消息
+- 客服绑定：客服 → 通过自建应用管理此账号 → 绑定到本应用
+- 支持消息：text, link（公众号/知乎等）
+- 自愈：periodic_sync_loop() 每 SYNC_INTERVAL 秒按游标补拉
+- 回执：command.py 成功时回“保存成功✅”，失败时回“保存失败❌”
 """
-import os
+
 from flask import Flask, request, jsonify
 from xml.dom.minidom import parseString
 import time, os, sys, json, threading, subprocess
@@ -16,30 +15,37 @@ import requests
 from datetime import datetime
 
 # ============== 加解密依赖 ==============
+sys.path.append("weworkapi_python/callback")  # 确保 WXBizMsgCrypt3.py 可用
 from WXBizMsgCrypt3 import WXBizMsgCrypt
 
 app = Flask(__name__)
 
-# ============== 必填配置（按实际修改） ==============
-# 自建应用 回调验签参数（应用管理 → 你的应用 → 接收消息）
+# ============== 配置读取（用环境变量注入） ==============
 APP_TOKEN = os.environ.get("APP_TOKEN", "")
 APP_ENCODING_AES_KEY = os.environ.get("APP_ENCODING_AES_KEY", "")
 CORP_ID = os.environ.get("CORP_ID", "")
+
+# 取 access_token 的密钥（两者都填则优先 KF_SECRET）
 KF_SECRET = os.environ.get("KF_SECRET", "")
 APP_SECRET = os.environ.get("APP_SECRET", "")
 
 # 你的转发脚本（保持你自己的）
-COMMAND_PY = "command.py"
+COMMAND_PY = os.environ.get("COMMAND_PY", "command.py")
 
 # 运行参数
-CURSOR_FILE = "kf_cursor.json"   # {OpenKfId: cursor}
-SEEN_FILE   = "kf_seen.json"     # {OpenKfId: [msgid...]} 去重用
-LOG_FILE    = "history.log"
-CHANNEL_KF  = 9                  # 客服来源
-CHANNEL_APP = 0                  # 应用来源（内部）
-POLL_LIMIT  = 1000               # 每次拉取上限
-SYNC_INTERVAL = 60               # 自愈补拉间隔（秒）
+CURSOR_FILE = os.environ.get("CURSOR_FILE", "kf_cursor.json")   # {OpenKfId: cursor}
+SEEN_FILE   = os.environ.get("SEEN_FILE", "kf_seen.json")       # {OpenKfId: [msgid...]}
+LOG_FILE    = os.environ.get("LOG_FILE", "history.log")
+CHANNEL_KF  = int(os.environ.get("CHANNEL_KF", "9"))            # 客服来源
+CHANNEL_APP = int(os.environ.get("CHANNEL_APP", "0"))           # 应用来源（内部）
+POLL_LIMIT  = int(os.environ.get("POLL_LIMIT", "1000"))         # 每次拉取上限
+SYNC_INTERVAL = int(os.environ.get("SYNC_INTERVAL", "60"))      # 自愈补拉间隔（秒）
+CMD_TIMEOUT = int(os.environ.get("CMD_TIMEOUT", "30"))          # command.py 超时（秒）
 # ===================================================
+
+# 基本校验
+if not (APP_TOKEN and APP_ENCODING_AES_KEY and CORP_ID):
+    print("[WARN] APP_TOKEN/APP_ENCODING_AES_KEY/CORP_ID 未配置，回调校验将失败。")
 
 wxcpt = WXBizMsgCrypt(APP_TOKEN, APP_ENCODING_AES_KEY, CORP_ID)
 _kf_token_cache = {"token": None, "expire_at": 0}
@@ -56,12 +62,19 @@ def _gettoken_by_secret(secret: str):
     r.raise_for_status()
     return r.json()
 
+def md_escape(text: str) -> str:
+    """转义可能破坏 Markdown 的括号/方括号"""
+    return (text or "").replace("[", r"\[").replace("]", r"\]").replace("(", r"\)").replace(")", r"\)")
+
+def md_link(title: str, url: str) -> str:
+    """安全的 Markdown 链接：[{title}](<url>)"""
+    return f"[{md_escape(title) or '链接'}](<{url.strip()}>)"
+
 def get_kf_access_token():
     """
     优先 KF_SECRET；若缺失/失败则用 APP_SECRET。
-    注意：若走 APP_SECRET，需在自建应用的 API 权限里勾选“微信客服”相关能力。
+    注意：若走 APP_SECRET，需在自建应用的 API 权限里勾选“微信客服”能力。
     """
-    global _kf_token_cache
     if _kf_token_cache["token"] and _kf_token_cache["expire_at"] - now_ts() > 120:
         return _kf_token_cache["token"]
 
@@ -93,44 +106,72 @@ def get_kf_access_token():
 
     raise RuntimeError(f"gettoken failed. first_err={first_err}")
 
-def load_cursors():
-    if not os.path.exists(CURSOR_FILE): return {}
+def load_json(path, default):
+    if not os.path.exists(path): return default
     try:
-        with open(CURSOR_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {}
+        return default
 
-def save_cursors(cursors: dict):
-    tmp = CURSOR_FILE + ".tmp"
+def save_json(path, data):
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cursors, f, ensure_ascii=False)
-    os.replace(tmp, CURSOR_FILE)
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
 
-def load_seen():
-    if not os.path.exists(SEEN_FILE): return {}
+def load_cursors(): return load_json(CURSOR_FILE, {})
+def save_cursors(cursors: dict): save_json(CURSOR_FILE, cursors)
+def load_seen(): return load_json(SEEN_FILE, {})
+def save_seen(seen: dict): save_json(SEEN_FILE, seen)
+
+# ========= 主动回消息（保存成功/失败回执） =========
+def send_kf_text(open_kfid: str, touser: str, text: str):
+    """
+    给客服会话里某个用户回一条文本
+    - open_kfid: 客服账号ID（wk...）
+    - touser:    用户external_userid（wm...）
+    """
     try:
-        with open(SEEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_seen(seen: dict):
-    tmp = SEEN_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(seen, f, ensure_ascii=False)
-    os.replace(tmp, SEEN_FILE)
-
-def log_and_forward(user_id: str, content: str, channel: int, msg_type: int):
-    """msg_type: 0=文本（我们把 link 也整理成文本内容转发）"""
-    append_log(f"[ch{channel}] {user_id}: {content[:200]}")
-    try:
-        subprocess.Popen(
-            ["python3", COMMAND_PY, str(user_id), str(content), str(channel), str(msg_type)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        token = get_kf_access_token()
+        url = f"https://qyapi.weixin.qq.com/cgi-bin/kf/send_msg?access_token={token}"
+        payload = {
+            "touser": touser,
+            "open_kfid": open_kfid,
+            "msgtype": "text",
+            "text": {"content": text[:2000]},
+        }
+        r = requests.post(url, json=payload, timeout=10)
+        data = r.json()
+        if data.get("errcode") != 0:
+            append_log(f"[WARN] send_kf_text failed: {data}")
+        return data
     except Exception as e:
-        append_log(f"[ERR] start command.py failed: {e}")
+        append_log(f"[ERR] send_kf_text exception: {e}")
+        return {"errcode": -1, "errmsg": str(e)}
+
+# ========= 统一转发（同步执行 command.py + 回执） =========
+def log_and_forward(user_id: str, content: str, channel: int, msg_type: int, open_kfid: str = None):
+    """msg_type: 0=文本（link 也整理成文本内容转发）"""
+    append_log(f"[ch{channel}] {user_id}: {content[:200]}")
+    ok = False
+    try:
+        cp = subprocess.run(
+            ["python3", COMMAND_PY, str(user_id), str(content), str(channel), str(msg_type)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=CMD_TIMEOUT
+        )
+        ok = (cp.returncode == 0)
+        if not ok:
+            append_log(f"[ERR] command.py rc={cp.returncode}, stderr={cp.stderr[-400:]}")
+    except subprocess.TimeoutExpired:
+        append_log("[ERR] command.py timeout")
+    except Exception as e:
+        append_log(f"[ERR] start/run command.py failed: {e}")
+
+    # 仅外部微信用户 + 有 open_kfid 时回执
+    if open_kfid and str(user_id).startswith("wm"):
+        tip = "保存成功✅" if ok else "保存失败❌（稍后再试）"
+        send_kf_text(open_kfid, user_id, tip)
 
 def get_tag_text(doc, tag_name):
     nodes = doc.getElementsByTagName(tag_name)
@@ -138,6 +179,7 @@ def get_tag_text(doc, tag_name):
         return ""
     return (nodes[0].childNodes[0].data or "").strip()
 
+# ========= 拉取并处理客服消息 =========
 def kf_sync_msg_once(event_token: str, open_kfid: str):
     """
     拉取并处理客服消息（支持 text + link）：
@@ -204,14 +246,21 @@ def kf_sync_msg_once(event_token: str, open_kfid: str):
         if m.get("origin") != 3:
             continue
 
+        user = m.get("external_userid", "wx_external")
+
         # 1) 文本
         if m.get("msgtype") == "text":
             got_any = True
-            user = m.get("external_userid", "wx_external")
             text = (m.get("text") or {}).get("content", "").strip()
+            # 针对“不可展示”的提醒
+            if text.strip() == "[该消息类型暂不能展示]":
+                tip = "提示：该消息类型客服接口不支持。请直接粘贴链接或发截图~"
+                log_and_forward(user, f"{tip}", CHANNEL_KF, 0, open_kfid=open_kfid)
+                if msgid: seen_set.add(msgid)
+                continue
             if text:
-                content = f"[{open_kfid}] {text}"
-                log_and_forward(user, content, CHANNEL_KF, 0)
+                content = f"{text}"
+                log_and_forward(user, content, CHANNEL_KF, 0, open_kfid=open_kfid)
                 if msgid: seen_set.add(msgid)
 
         # 2) 链接卡片（公众号/知乎等）
@@ -222,12 +271,17 @@ def kf_sync_msg_once(event_token: str, open_kfid: str):
             title = (link.get("title") or "").strip()
             url_  = (link.get("url") or "").strip()
             desc  = (link.get("desc") or "").strip()
+
             if url_:
-                content = f"[{open_kfid}] 🔗 {title or '链接'}\n{url_}\n{desc}"
-                log_and_forward(user, content, CHANNEL_KF, 0)
+                md = md_link(title, url_)
+                # 你也可以只保留一行 md，不要描述：
+                content = f"{md}"
+                # content = f"{md}\n{desc}"
+                log_and_forward(user, content, CHANNEL_KF, 0, open_kfid=open_kfid)
                 if msgid: seen_set.add(msgid)
 
-        # 其他类型暂不处理（image/voice/file 等可后续扩展）
+
+        # 其他类型暂不处理（image/voice/file/miniprogram 可后续扩展）
 
     # 更新游标
     next_cursor = data.get("next_cursor")
@@ -268,30 +322,24 @@ def handle_kf_event(doc):
     ).start()
     return True
 
-# ============== 调用客服账号列表（自愈用） ==============
+# ============== 可见客服账号列表（自愈用） ==============
 def list_kf_accounts():
-    """
-    返回当前 access_token 可管理的客服 open_kfid 列表
-    """
     try:
         token = get_kf_access_token()
         url = f"https://qyapi.weixin.qq.com/cgi-bin/kf/account/list?access_token={token}"
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
+        r = requests.get(url, timeout=10); r.raise_for_status()
         data = r.json()
         if data.get("errcode") != 0:
             append_log(f"[ERR] kf/account/list: {data}")
             return []
-        accounts = [item.get("open_kfid") for item in (data.get("account_list") or []) if item.get("open_kfid")]
-        return accounts
+        return [i.get("open_kfid") for i in (data.get("account_list") or []) if i.get("open_kfid")]
     except Exception as e:
         append_log(f"[ERR] list_kf_accounts exception: {e}")
         return []
 
-# 简单的并发保护：避免同一 kfid 同时多次拉取（事件 + 定时器并发）
+# 避免同一 kfid 并发同步（事件 + 定时器同时触发）
 _sync_flags = {}
 _sync_lock = threading.Lock()
-
 def _run_sync_guarded(open_kfid: str, event_token: str = ""):
     with _sync_lock:
         if _sync_flags.get(open_kfid):
@@ -304,10 +352,6 @@ def _run_sync_guarded(open_kfid: str, event_token: str = ""):
             _sync_flags[open_kfid] = False
 
 def periodic_sync_loop():
-    """
-    后台循环：定时对所有客服账号做一次“无 token 的游标续拉”
-    即使没有事件也能把漏的消息补回来
-    """
     append_log(f"[INFO] periodic sync loop started, interval={SYNC_INTERVAL}s")
     while True:
         try:
@@ -350,9 +394,8 @@ def hook_path():
         append_log(f"[ERR] parse XML: {e}")
         return "success"
 
-    # 额外日志，防跨企业/跨应用
     corp_in_msg  = get_tag_text(doc, "ToUserName")  # 企业ID
-    agent_in_msg = get_tag_text(doc, "AgentID")     # 可能为空
+    agent_in_msg = get_tag_text(doc, "AgentID")     # 有些事件为空
     append_log(f"[DEBUG] event corp={corp_in_msg} agentid={agent_in_msg}")
 
     msg_type = get_tag_text(doc, "MsgType").lower()
@@ -369,14 +412,14 @@ def hook_path():
         content = get_tag_text(doc, "Content")
         if user_id and content:
             prefix = "[企业同事]" if not user_id.startswith("wm") else "[微信用户]"
-            log_and_forward(user_id, f"{prefix} {content}", CHANNEL_APP, 0)
+            # 内部消息不需要回执，open_kfid 传 None
+            log_and_forward(user_id, f"{prefix} {content}", CHANNEL_APP, 0, open_kfid=None)
 
     return "success"
 
 # ============== 调试接口 ==============
 @app.route("/debug/kf_accounts")
 def debug_kf_accounts():
-    """查看当前 access_token 能管理的客服账号列表"""
     try:
         token = get_kf_access_token()
         url = f"https://qyapi.weixin.qq.com/cgi-bin/kf/account/list?access_token={token}"
@@ -395,5 +438,5 @@ def debug_ping():
 if __name__ == "__main__":
     # 启动定时补拉线程（自愈）
     threading.Thread(target=periodic_sync_loop, daemon=True).start()
-    # 生产建议用 gunicorn/uwsgi + systemd（或 nohup 跑也行）
+    # 生产建议用 gunicorn/uwsgi + systemd（或 nohup 也行）
     app.run("0.0.0.0", 5000)
